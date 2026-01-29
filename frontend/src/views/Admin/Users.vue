@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { ArrowDown } from '@element-plus/icons-vue'
 import api from '../../utils/api'
 
 const users = ref([])
@@ -102,6 +103,14 @@ function formatDate(dateStr) {
   if (!dateStr) return '-'
   return new Date(dateStr).toLocaleString('zh-CN')
 }
+
+function handleCommand(command, user) {
+  if (command === 'toggleAdmin') {
+    toggleAdminStatus(user)
+  } else if (command === 'delete') {
+    handleDeleteUser(user)
+  }
+}
 </script>
 
 <template>
@@ -110,15 +119,15 @@ function formatDate(dateStr) {
       <h2>用户管理</h2>
     </div>
 
-    <el-table :data="users" v-loading="loading" stripe>
+    <el-table :data="users" v-loading="loading" stripe style="width: 100%">
       <el-table-column prop="id" label="ID" width="80" />
-      <el-table-column prop="username" label="用户名" width="150" />
-      <el-table-column prop="email" label="邮箱" width="200" show-overflow-tooltip>
+      <el-table-column prop="username" label="用户名" min-width="120" />
+      <el-table-column prop="email" label="邮箱" min-width="180" show-overflow-tooltip>
         <template #default="{ row }">
           {{ row.email || '-' }}
         </template>
       </el-table-column>
-      <el-table-column label="角色" width="100">
+      <el-table-column label="角色" width="90">
         <template #default="{ row }">
           <el-tag :type="row.is_admin ? 'danger' : 'info'" size="small">
             {{ row.is_admin ? '管理员' : '普通用户' }}
@@ -138,23 +147,33 @@ function formatDate(dateStr) {
           {{ formatDate(row.created_at) }}
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="280" fixed="right">
+      <el-table-column label="操作" min-width="240">
         <template #default="{ row }">
-          <el-button
-            size="small"
-            :type="row.is_active ? 'warning' : 'success'"
-            @click="toggleUserStatus(row)"
-          >
-            {{ row.is_active ? '禁用' : '启用' }}
-          </el-button>
-          <el-button
-            size="small"
-            @click="toggleAdminStatus(row)"
-          >
-            {{ row.is_admin ? '取消管理员' : '设为管理员' }}
-          </el-button>
-          <el-button size="small" @click="showResetDialog(row)">重置密码</el-button>
-          <el-button size="small" type="danger" @click="handleDeleteUser(row)">删除</el-button>
+          <div class="action-buttons">
+            <el-button
+              size="small"
+              :type="row.is_active ? 'warning' : 'success'"
+              @click="toggleUserStatus(row)"
+            >
+              {{ row.is_active ? '禁用' : '启用' }}
+            </el-button>
+            <el-button size="small" @click="showResetDialog(row)">重置密码</el-button>
+            <el-dropdown trigger="click" @command="(cmd) => handleCommand(cmd, row)">
+              <el-button size="small">
+                更多<el-icon class="el-icon--right"><arrow-down /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="toggleAdmin">
+                    {{ row.is_admin ? '取消管理员' : '设为管理员' }}
+                  </el-dropdown-item>
+                  <el-dropdown-item command="delete" divided style="color: #f56c6c">
+                    删除用户
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -198,5 +217,11 @@ function formatDate(dateStr) {
 
 .page-header h2 {
   margin: 0;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 </style>
