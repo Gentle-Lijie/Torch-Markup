@@ -2,17 +2,21 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAnnotationStore } from '../stores/annotation'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { useShortcutsStore } from '../stores/shortcuts'
+import { ElMessage } from 'element-plus'
 import AnnotationCanvas from '../components/AnnotationCanvas.vue'
 import api from '../utils/api'
 
 const route = useRoute()
 const router = useRouter()
 const store = useAnnotationStore()
+const shortcutsStore = useShortcutsStore()
 
 const datasetId = computed(() => parseInt(route.params.datasetId))
 const progress = ref(null)
 const showHelp = ref(false)
+const showShortcutSettings = ref(false)
+const editingShortcut = ref(null)
 
 onMounted(async () => {
   await loadData()
@@ -71,39 +75,74 @@ function handleKeydown(e) {
     return
   }
 
+  // 使用自定义快捷键
+  if (shortcutsStore.matchShortcut(e, 'save')) {
+    e.preventDefault()
+    handleSave()
+    return
+  }
+
+  if (shortcutsStore.matchShortcut(e, 'skip')) {
+    handleSkip()
+    return
+  }
+
+  if (shortcutsStore.matchShortcut(e, 'undo')) {
+    e.preventDefault()
+    store.undo()
+    return
+  }
+
+  if (shortcutsStore.matchShortcut(e, 'redo')) {
+    e.preventDefault()
+    store.redo()
+    return
+  }
+
+  if (shortcutsStore.matchShortcut(e, 'help')) {
+    showHelp.value = !showHelp.value
+    return
+  }
+
   const key = e.key.toLowerCase()
 
-  // 快捷键
-  switch (key) {
-    case 's':
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault()
-        handleSave()
-      }
-      break
-    case 'n':
-      handleSkip()
-      break
-    case 'z':
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault()
-        if (e.shiftKey) {
-          store.redo()
-        } else {
-          store.undo()
-        }
-      }
-      break
-    case '?':
-      showHelp.value = !showHelp.value
-      break
-    case 'escape':
-      showHelp.value = false
-      break
-    default:
-      // 数字或字母快捷键选择类别
-      store.selectCategoryByKey(key)
+  if (key === 'escape') {
+    showHelp.value = false
+    showShortcutSettings.value = false
+    return
   }
+
+  // 数字或字母快捷键选择类别
+  store.selectCategoryByKey(key)
+}
+
+// 快捷键设置相关
+function startEditShortcut(action) {
+  editingShortcut.value = action
+}
+
+function handleShortcutKeydown(e) {
+  e.preventDefault()
+  if (!editingShortcut.value) return
+
+  if (e.key === 'Escape') {
+    editingShortcut.value = null
+    return
+  }
+
+  const key = e.key.length === 1 ? e.key.toLowerCase() : e.key
+  shortcutsStore.updateShortcut(editingShortcut.value, {
+    key,
+    ctrl: e.ctrlKey || e.metaKey,
+    shift: e.shiftKey
+  })
+  editingShortcut.value = null
+  ElMessage.success('快捷键已更新')
+}
+
+function resetShortcuts() {
+  shortcutsStore.resetToDefault()
+  ElMessage.success('快捷键已重置为默认')
 }
 
 function selectCategory(category) {
@@ -117,8 +156,33 @@ function goBack() {
 
 <template>
   <div class="annotation-container">
+    <!-- 首次加载全屏进度 -->
+    <div v-if="store.isInitialLoad && store.isPrefetching" class="initial-loading">
+      <div class="loading-content">
+        <h2>正在加载图片...</h2>
+        <el-progress
+          :percentage="store.prefetchProgress"
+          :stroke-width="20"
+          :text-inside="true"
+          style="width: 400px"
+        />
+        <p>预加载中，请稍候</p>
+      </div>
+    </div>
+
+    <!-- 后台预加载进度条 -->
+    <div v-if="!store.isInitialLoad && store.isPrefetching" class="prefetch-bar">
+      <span>缓存加载中...</span>
+      <el-progress
+        :percentage="store.prefetchProgress"
+        :stroke-width="6"
+        style="width: 200px"
+      />
+      <span class="queue-info">队列: {{ store.queueLength }}</span>
+    </div>
+
     <!-- 顶部工具栏 -->
-    <header class="toolbar">
+    <header class="toolbar" v-show="!store.isInitialLoad || !store.isPrefetching">
       <div class="left">
         <el-button @click="goBack" :icon="'ArrowLeft'">返回</el-button>
         <span class="image-info" v-if="store.currentImage">
@@ -139,14 +203,15 @@ function goBack() {
         </el-button-group>
       </div>
       <div class="right">
+        <el-button @click="showShortcutSettings = true" :icon="'Setting'">快捷键</el-button>
         <el-button @click="showHelp = true" :icon="'QuestionFilled'">帮助</el-button>
-        <el-button @click="handleSkip" type="warning">跳过 (N)</el-button>
-        <el-button @click="handleSave" type="primary">保存 (Ctrl+S)</el-button>
+        <el-button @click="handleSkip" type="warning">跳过 ({{ shortcutsStore.getShortcutText('skip') }})</el-button>
+        <el-button @click="handleSave" type="primary">保存 ({{ shortcutsStore.getShortcutText('save') }})</el-button>
       </div>
     </header>
 
     <!-- 主内容区 -->
-    <main class="main-content">
+    <main class="main-content" v-show="!store.isInitialLoad || !store.isPrefetching">
       <!-- 左侧类别面板 -->
       <aside class="category-panel">
         <h3>类别选择</h3>
@@ -240,6 +305,11 @@ function goBack() {
             </div>
           </div>
         </div>
+
+        <div class="queue-status" v-if="store.queueLength > 0">
+          <h4>缓存队列</h4>
+          <span class="queue-count">{{ store.queueLength }} 张</span>
+        </div>
       </aside>
     </main>
 
@@ -248,19 +318,19 @@ function goBack() {
       <div class="help-content">
         <table class="shortcuts-table">
           <tr>
-            <td><kbd>Ctrl</kbd> + <kbd>S</kbd></td>
+            <td><kbd>{{ shortcutsStore.getShortcutText('save') }}</kbd></td>
             <td>保存当前标注</td>
           </tr>
           <tr>
-            <td><kbd>N</kbd></td>
+            <td><kbd>{{ shortcutsStore.getShortcutText('skip') }}</kbd></td>
             <td>跳过当前图片（无目标）</td>
           </tr>
           <tr>
-            <td><kbd>Ctrl</kbd> + <kbd>Z</kbd></td>
+            <td><kbd>{{ shortcutsStore.getShortcutText('undo') }}</kbd></td>
             <td>撤销</td>
           </tr>
           <tr>
-            <td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Z</kbd></td>
+            <td><kbd>{{ shortcutsStore.getShortcutText('redo') }}</kbd></td>
             <td>重做</td>
           </tr>
           <tr>
@@ -280,10 +350,45 @@ function goBack() {
             <td>快速切换类别</td>
           </tr>
           <tr>
-            <td><kbd>?</kbd></td>
+            <td><kbd>{{ shortcutsStore.getShortcutText('help') }}</kbd></td>
             <td>显示/隐藏帮助</td>
           </tr>
         </table>
+        <div class="help-tip">
+          <el-button text type="primary" @click="showHelp = false; showShortcutSettings = true">
+            自定义快捷键
+          </el-button>
+        </div>
+      </div>
+    </el-dialog>
+
+    <!-- 快捷键设置弹窗 -->
+    <el-dialog v-model="showShortcutSettings" title="快捷键设置" width="500px">
+      <div class="shortcut-settings">
+        <table class="shortcuts-table">
+          <tr v-for="(config, action) in shortcutsStore.shortcuts" :key="action">
+            <td class="action-name">{{ config.description }}</td>
+            <td class="shortcut-key">
+              <div
+                class="key-input"
+                :class="{ editing: editingShortcut === action }"
+                @click="startEditShortcut(action)"
+                @keydown="handleShortcutKeydown"
+                tabindex="0"
+              >
+                <template v-if="editingShortcut === action">
+                  按下新快捷键...
+                </template>
+                <template v-else>
+                  <kbd>{{ shortcutsStore.getShortcutText(action) }}</kbd>
+                </template>
+              </div>
+            </td>
+          </tr>
+        </table>
+        <div class="settings-footer">
+          <el-button @click="resetShortcuts">恢复默认</el-button>
+        </div>
       </div>
     </el-dialog>
   </div>
@@ -461,6 +566,25 @@ function goBack() {
   color: #409eff;
 }
 
+.queue-status {
+  margin-top: 24px;
+  padding: 12px;
+  background: #0f3460;
+  border-radius: 6px;
+}
+
+.queue-status h4 {
+  color: #a0a0a0;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.queue-count {
+  color: #67c23a;
+  font-size: 18px;
+  font-weight: bold;
+}
+
 .help-content {
   padding: 16px;
 }
@@ -486,5 +610,97 @@ kbd {
   border: 1px solid #ccc;
   border-radius: 4px;
   font-size: 12px;
+}
+
+/* 首次加载全屏进度 */
+.initial-loading {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: #1a1a2e;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.loading-content {
+  text-align: center;
+  color: white;
+}
+
+.loading-content h2 {
+  margin-bottom: 24px;
+}
+
+.loading-content p {
+  margin-top: 16px;
+  color: #a0a0a0;
+}
+
+/* 后台预加载进度条 */
+.prefetch-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 32px;
+  background: #16213e;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  z-index: 1000;
+  color: #a0a0a0;
+  font-size: 13px;
+}
+
+.prefetch-bar .queue-info {
+  color: #67c23a;
+}
+
+/* 快捷键设置 */
+.shortcut-settings {
+  padding: 16px;
+}
+
+.shortcuts-table .action-name {
+  width: 150px;
+}
+
+.shortcuts-table .shortcut-key {
+  width: 200px;
+}
+
+.key-input {
+  padding: 8px 16px;
+  background: #f5f5f5;
+  border: 2px solid #ddd;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.2s;
+}
+
+.key-input:hover {
+  border-color: #409eff;
+}
+
+.key-input.editing {
+  border-color: #e94560;
+  background: #fff5f5;
+  color: #e94560;
+}
+
+.settings-footer {
+  margin-top: 24px;
+  text-align: center;
+}
+
+.help-tip {
+  margin-top: 16px;
+  text-align: center;
 }
 </style>

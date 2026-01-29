@@ -94,6 +94,64 @@ async def get_next_image(
     }
 
 
+@router.get("/next/{dataset_id}/batch")
+async def get_next_images_batch(
+    dataset_id: int,
+    count: int = 20,
+    conn = Depends(get_db_dependency),
+    current_user = Depends(get_current_user)
+):
+    """批量获取待标注图片（用于预加载）"""
+    if count > 50:
+        count = 50  # 限制最大数量
+
+    with conn.cursor() as cursor:
+        # 检查数据集
+        cursor.execute("SELECT id FROM datasets WHERE id = %s AND is_active = TRUE", (dataset_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="数据集不存在或未激活")
+
+        # 获取当前用户已分配的图片
+        cursor.execute(
+            "SELECT * FROM images WHERE dataset_id = %s AND assigned_to = %s AND status = 'assigned'",
+            (dataset_id, current_user['id'])
+        )
+        assigned_images = cursor.fetchall()
+
+        # 获取待标注图片
+        remaining = count - len(assigned_images)
+        pending_images = []
+        if remaining > 0:
+            cursor.execute(
+                "SELECT * FROM images WHERE dataset_id = %s AND status = 'pending' LIMIT %s",
+                (dataset_id, remaining)
+            )
+            pending_images = cursor.fetchall()
+
+            # 分配给当前用户
+            for image in pending_images:
+                cursor.execute(
+                    "UPDATE images SET assigned_to = %s, assigned_at = NOW(), status = 'assigned' WHERE id = %s",
+                    (current_user['id'], image['id'])
+                )
+                image['status'] = 'assigned'
+                image['assigned_to'] = current_user['id']
+
+        all_images = list(assigned_images) + list(pending_images)
+
+        # 获取每张图片的标注
+        result = []
+        for image in all_images:
+            cursor.execute("SELECT * FROM annotations WHERE image_id = %s", (image['id'],))
+            annotations = cursor.fetchall()
+            result.append({
+                **image,
+                "annotations": annotations
+            })
+
+    return result
+
+
 @router.get("/{image_id}")
 async def get_image(
     image_id: int,
