@@ -2,9 +2,15 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import api from '../utils/api'
 
+const STORAGE_KEY = 'torch-markup-token'
+const USER_STORAGE_KEY = 'torch-markup-user'
+
 export const useUserStore = defineStore('user', () => {
-  const user = ref(null)
-  const token = ref(localStorage.getItem('token') || null)
+  // 尝试从 localStorage 恢复用户信息
+  const savedUser = localStorage.getItem(USER_STORAGE_KEY)
+  const user = ref(savedUser ? JSON.parse(savedUser) : null)
+  const token = ref(localStorage.getItem(STORAGE_KEY) || null)
+  const initialized = ref(!token.value) // 没有 token 时视为已初始化
 
   const isLoggedIn = computed(() => !!token.value)
   const isAdmin = computed(() => user.value?.is_admin || false)
@@ -20,7 +26,9 @@ export const useUserStore = defineStore('user', () => {
 
     token.value = response.data.access_token
     user.value = response.data.user
-    localStorage.setItem('token', token.value)
+    localStorage.setItem(STORAGE_KEY, token.value)
+    localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(response.data.user))
+    initialized.value = true
 
     return response.data
   }
@@ -35,11 +43,16 @@ export const useUserStore = defineStore('user', () => {
   }
 
   async function fetchUser() {
-    if (!token.value) return null
+    if (!token.value) {
+      initialized.value = true
+      return null
+    }
 
     try {
       const response = await api.get('/auth/me')
       user.value = response.data
+      localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(response.data))
+      initialized.value = true
       return response.data
     } catch (error) {
       logout()
@@ -50,17 +63,25 @@ export const useUserStore = defineStore('user', () => {
   function logout() {
     user.value = null
     token.value = null
-    localStorage.removeItem('token')
+    initialized.value = true
+    localStorage.removeItem(STORAGE_KEY)
+    localStorage.removeItem(USER_STORAGE_KEY)
   }
 
-  // 初始化时获取用户信息
-  if (token.value) {
+  // 初始化时验证 token 有效性（后台刷新用户信息）
+  if (token.value && user.value) {
+    // 已有缓存的用户信息，标记为已初始化，后台刷新
+    initialized.value = true
+    fetchUser().catch(() => {})
+  } else if (token.value) {
+    // 有 token 但没有用户信息，需要获取
     fetchUser().catch(() => {})
   }
 
   return {
     user,
     token,
+    initialized,
     isLoggedIn,
     isAdmin,
     login,

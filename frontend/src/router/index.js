@@ -78,8 +78,17 @@ const router = createRouter({
 })
 
 // 路由守卫
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
   const userStore = useUserStore()
+
+  // 等待用户信息初始化完成
+  if (!userStore.initialized && userStore.token) {
+    try {
+      await userStore.fetchUser()
+    } catch {
+      // 忽略错误，fetchUser 内部会处理
+    }
+  }
 
   if (to.meta.requiresAuth && !userStore.isLoggedIn) {
     next({ name: 'Login', query: { redirect: to.fullPath } })
