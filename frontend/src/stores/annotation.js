@@ -30,7 +30,14 @@ export const useAnnotationStore = defineStore('annotation', () => {
   const canUndo = computed(() => historyIndex.value > 0)
   const canRedo = computed(() => historyIndex.value < history.value.length - 1)
   const queueLength = computed(() => imageQueue.value.length)
-  const canGoPrevious = computed(() => processedHistory.value.length > 0 && historyPosition.value !== 0)
+  // 可以返回上一张的条件：有已处理的历史记录
+  // 如果不在历史模式，只要有历史就可以返回
+  // 如果在历史模式，位置不能是第一张
+  const canGoPrevious = computed(() => {
+    if (processedHistory.value.length === 0) return false
+    if (!isInHistory.value) return true  // 不在历史模式，有历史就可以返回
+    return historyPosition.value > 0     // 在历史模式，不能是第一张
+  })
   const canGoNext = computed(() => isInHistory.value && historyPosition.value < processedHistory.value.length - 1)
 
   // 加载类别

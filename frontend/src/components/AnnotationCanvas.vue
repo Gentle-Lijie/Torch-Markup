@@ -26,7 +26,8 @@ const offsetY = ref(0)
 
 // 绘制状态
 const isDrawing = ref(false)
-const isDragging = ref(false)
+const isDragging = ref(false)   // 调整边框大小
+const isMoving = ref(false)     // 整体移动框
 const isPanning = ref(false)
 const spacePressed = ref(false)
 
@@ -138,8 +139,8 @@ function draw() {
   // 绘制已有标注
   props.annotations.forEach((ann, index) => {
     const isSelected = ann.id === selectedAnnotation.value?.id
-    // 如果正在拖动调整这个标注，使用 dragBox 绘制
-    if (isSelected && isDragging.value && dragBox.value) {
+    // 如果正在拖动调整或移动这个标注，使用 dragBox 绘制
+    if (isSelected && (isDragging.value || isMoving.value) && dragBox.value) {
       drawAnnotationWithBox(ann, dragBox.value, index, true)
     } else {
       drawAnnotation(ann, index, isSelected)
@@ -279,10 +280,22 @@ function handleMouseDown(e) {
     }
   }
 
-  // 检查是否点击了已有标注
+  // 检查是否点击了已有标注（开始拖动移动）
   const clickedAnn = getAnnotationAt(screenX, screenY)
   if (clickedAnn) {
     selectedAnnotation.value = clickedAnn
+    // 开始拖动移动
+    isMoving.value = true
+    startPoint.value = screenToImage(screenX, screenY)
+    // 初始化 dragBox
+    const imgW = image.value.width
+    const imgH = image.value.height
+    dragBox.value = {
+      x: (clickedAnn.x_center - clickedAnn.width / 2) * imgW,
+      y: (clickedAnn.y_center - clickedAnn.height / 2) * imgH,
+      w: clickedAnn.width * imgW,
+      h: clickedAnn.height * imgH
+    }
     draw()
     return
   }
@@ -319,6 +332,29 @@ function handleMouseMove(e) {
     return
   }
 
+  // 整体移动
+  if (isMoving.value && selectedAnnotation.value && dragBox.value) {
+    const imgPoint = screenToImage(screenX, screenY)
+    const dx = imgPoint.x - startPoint.value.x
+    const dy = imgPoint.y - startPoint.value.y
+
+    // 计算原始位置
+    const ann = selectedAnnotation.value
+    const imgW = image.value.width
+    const imgH = image.value.height
+    const origX = (ann.x_center - ann.width / 2) * imgW
+    const origY = (ann.y_center - ann.height / 2) * imgH
+
+    dragBox.value = {
+      x: origX + dx,
+      y: origY + dy,
+      w: dragBox.value.w,
+      h: dragBox.value.h
+    }
+    draw()
+    return
+  }
+
   // 绘制中
   if (isDrawing.value && currentBox.value) {
     const imgPoint = screenToImage(screenX, screenY)
@@ -337,20 +373,28 @@ function handleMouseUp(e) {
     return
   }
 
-  if (isDragging.value) {
+  if (isDragging.value || isMoving.value) {
+    const wasMoving = isMoving.value
     isDragging.value = false
+    isMoving.value = false
     dragHandle.value = null
     // 保存更新
     if (selectedAnnotation.value && dragBox.value && image.value) {
       const imgW = image.value.width
       const imgH = image.value.height
       const box = dragBox.value
-      emit('update', selectedAnnotation.value.id, {
+      const newData = {
         x_center: (box.x + box.w / 2) / imgW,
         y_center: (box.y + box.h / 2) / imgH,
         width: box.w / imgW,
         height: box.h / imgH
-      })
+      }
+      emit('update', selectedAnnotation.value.id, newData)
+      // 更新 selectedAnnotation 的引用，避免下次操作使用旧数据
+      selectedAnnotation.value = {
+        ...selectedAnnotation.value,
+        ...newData
+      }
     }
     dragBox.value = null
     return
