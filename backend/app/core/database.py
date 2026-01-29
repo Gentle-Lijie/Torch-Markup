@@ -1,24 +1,63 @@
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+import pymysql
+from pymysql.cursors import DictCursor
+from contextlib import contextmanager
 from .config import settings
 
-engine = create_engine(
-    settings.DATABASE_URL,
-    pool_pre_ping=True,
-    pool_recycle=3600,
-    echo=settings.DEBUG
-)
+# 解析数据库URL
+def parse_database_url(url: str) -> dict:
+    """解析数据库连接URL"""
+    # mysql+pymysql://user:password@host:port/database
+    url = url.replace("mysql+pymysql://", "")
+    auth, rest = url.split("@")
+    user, password = auth.split(":")
+    host_port, database = rest.split("/")
+    if ":" in host_port:
+        host, port = host_port.split(":")
+        port = int(port)
+    else:
+        host = host_port
+        port = 3306
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    return {
+        "host": host,
+        "port": port,
+        "user": user,
+        "password": password,
+        "database": database,
+        "charset": "utf8mb4",
+        "cursorclass": DictCursor
+    }
 
-Base = declarative_base()
+db_config = parse_database_url(settings.DATABASE_URL)
 
 
+def get_connection():
+    """获取数据库连接"""
+    return pymysql.connect(**db_config)
+
+
+@contextmanager
 def get_db():
-    """数据库会话依赖"""
-    db = SessionLocal()
+    """数据库连接上下文管理器"""
+    conn = get_connection()
     try:
-        yield db
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
-        db.close()
+        conn.close()
+
+
+def get_db_dependency():
+    """FastAPI 依赖注入"""
+    conn = get_connection()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()

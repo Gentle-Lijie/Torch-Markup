@@ -1,5 +1,5 @@
 from .config import settings
-from .database import get_db, Base, engine
+from .database import get_db, get_db_dependency, get_connection
 from .security import (
     verify_password,
     get_password_hash,

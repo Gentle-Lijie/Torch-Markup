@@ -1,15 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
-from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import Optional, Tuple
+from typing import Optional
 import os
 import tempfile
 import shutil
 import zipfile
-from app.core import get_db, get_current_admin
-from app.models.user import User
-from app.services.yolo_export import YOLOExporter
+from app.core import get_db_dependency, get_current_admin
 
 router = APIRouter(prefix="/api/export", tags=["导出"])
 
@@ -40,8 +37,8 @@ export_tasks = {}
 @router.post("/yolo", response_model=ExportResponse)
 async def export_yolo(
     request: ExportRequest,
-    db: Session = Depends(get_db),
-    current_admin: User = Depends(get_current_admin)
+    conn = Depends(get_db_dependency),
+    current_admin = Depends(get_current_admin)
 ):
     """导出数据集为YOLO格式"""
     # 验证比例
@@ -49,19 +46,92 @@ async def export_yolo(
     if abs(total_ratio - 1.0) > 0.01:
         raise HTTPException(status_code=400, detail="分割比例之和必须为1")
 
-    # 创建临时目录
-    export_dir = tempfile.mkdtemp(prefix="yolo_export_")
-    output_name = request.output_name or f"dataset_{request.dataset_id}"
-    output_path = os.path.join(export_dir, output_name)
+    with conn.cursor() as cursor:
+        # 获取数据集
+        cursor.execute("SELECT * FROM datasets WHERE id = %s", (request.dataset_id,))
+        dataset = cursor.fetchone()
+        if not dataset:
+            raise HTTPException(status_code=404, detail="数据集不存在")
 
-    try:
-        exporter = YOLOExporter(db)
-        result = exporter.export_dataset(
-            dataset_id=request.dataset_id,
-            output_path=output_path,
-            split_ratio=(request.train_ratio, request.val_ratio, request.test_ratio),
-            include_unlabeled=request.include_unlabeled
+        # 获取类别
+        cursor.execute(
+            "SELECT * FROM categories WHERE dataset_id = %s ORDER BY sort_order",
+            (request.dataset_id,)
         )
+        categories = cursor.fetchall()
+        category_map = {cat['id']: idx for idx, cat in enumerate(categories)}
+
+        # 获取图片
+        if request.include_unlabeled:
+            cursor.execute("SELECT * FROM images WHERE dataset_id = %s", (request.dataset_id,))
+        else:
+            cursor.execute("SELECT * FROM images WHERE dataset_id = %s AND status = 'labeled'", (request.dataset_id,))
+        images = cursor.fetchall()
+
+        total = len(images)
+        if total == 0:
+            raise HTTPException(status_code=400, detail="没有可导出的图片")
+
+        # 创建临时目录
+        export_dir = tempfile.mkdtemp(prefix="yolo_export_")
+        output_name = request.output_name or f"dataset_{request.dataset_id}"
+        output_path = os.path.join(export_dir, output_name)
+
+        # 创建目录结构
+        for split in ["train", "val", "test"]:
+            os.makedirs(os.path.join(output_path, "images", split), exist_ok=True)
+            os.makedirs(os.path.join(output_path, "labels", split), exist_ok=True)
+
+        # 创建 data.yaml
+        names = [cat['name'] for cat in categories]
+        yaml_content = f"""path: {output_path}
+train: images/train
+val: images/val
+test: images/test
+
+nc: {len(names)}
+names: {names}
+"""
+        with open(os.path.join(output_path, "data.yaml"), "w", encoding="utf-8") as f:
+            f.write(yaml_content)
+
+        # 计算分割点
+        train_end = int(total * request.train_ratio)
+        val_end = train_end + int(total * request.val_ratio)
+
+        stats = {"train": 0, "val": 0, "test": 0, "annotations": 0}
+
+        for idx, image in enumerate(images):
+            # 确定分割
+            if idx < train_end:
+                split = "train"
+            elif idx < val_end:
+                split = "val"
+            else:
+                split = "test"
+
+            # 复制图片
+            src_path = image['file_path']
+            dst_image_path = os.path.join(output_path, "images", split, image['filename'])
+
+            if os.path.exists(src_path):
+                shutil.copy2(src_path, dst_image_path)
+                stats[split] += 1
+
+            # 获取标注并创建标签文件
+            cursor.execute("SELECT * FROM annotations WHERE image_id = %s", (image['id'],))
+            annotations = cursor.fetchall()
+
+            label_filename = os.path.splitext(image['filename'])[0] + ".txt"
+            label_path = os.path.join(output_path, "labels", split, label_filename)
+
+            with open(label_path, "w") as f:
+                for ann in annotations:
+                    if ann['category_id'] in category_map:
+                        class_id = category_map[ann['category_id']]
+                        line = f"{class_id} {ann['x_center']:.6f} {ann['y_center']:.6f} {ann['width']:.6f} {ann['height']:.6f}\n"
+                        f.write(line)
+                        stats["annotations"] += 1
 
         # 创建ZIP文件
         zip_path = os.path.join(export_dir, f"{output_name}.zip")
@@ -79,27 +149,22 @@ async def export_yolo(
             "export_dir": export_dir
         }
 
-        return ExportResponse(
-            total_images=result["total_images"],
-            train_images=result["train_images"],
-            val_images=result["val_images"],
-            test_images=result["test_images"],
-            total_annotations=result["total_annotations"],
-            categories=result["categories"],
-            download_url=f"/api/export/download/{task_id}"
-        )
-
-    except Exception as e:
-        # 清理临时目录
-        shutil.rmtree(export_dir, ignore_errors=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    return ExportResponse(
+        total_images=total,
+        train_images=stats["train"],
+        val_images=stats["val"],
+        test_images=stats["test"],
+        total_annotations=stats["annotations"],
+        categories=len(categories),
+        download_url=f"/api/export/download/{task_id}"
+    )
 
 
 @router.get("/download/{task_id}")
 async def download_export(
     task_id: str,
     background_tasks: BackgroundTasks,
-    current_admin: User = Depends(get_current_admin)
+    current_admin = Depends(get_current_admin)
 ):
     """下载导出的文件"""
     if task_id not in export_tasks:
@@ -123,20 +188,3 @@ async def download_export(
         media_type="application/zip",
         filename=os.path.basename(zip_path)
     )
-
-
-@router.get("/preview/{dataset_id}/{image_id}")
-async def preview_yolo_format(
-    dataset_id: int,
-    image_id: int,
-    db: Session = Depends(get_db),
-    current_admin: User = Depends(get_current_admin)
-):
-    """预览单张图片的YOLO格式标注"""
-    exporter = YOLOExporter(db)
-    result = exporter.export_single_image(image_id)
-
-    if result is None:
-        raise HTTPException(status_code=404, detail="图片不存在")
-
-    return {"yolo_format": result}

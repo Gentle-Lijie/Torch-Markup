@@ -122,5 +122,5 @@ CREATE TABLE IF NOT EXISTS work_statistics (
 -- 插入默认管理员账户
 -- 密码: 123456 (bcrypt哈希)
 INSERT INTO users (username, email, hashed_password, is_admin, is_active)
-VALUES ('admin', 'admin@torch-markup.local', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/X4.6HJgjCQnAENUHi', TRUE, TRUE)
+VALUES ('admin', 'admin@torch-markup.local', '$2b$12$tXRiGDRzF8unBqUSRnIYMuf1AXkH5HEouLpAapns4fY7UngSVbBwW', TRUE, TRUE)
 ON DUPLICATE KEY UPDATE username = username;
