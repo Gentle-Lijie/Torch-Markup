@@ -17,6 +17,12 @@ const progress = ref(null)
 const showHelp = ref(false)
 const showShortcutSettings = ref(false)
 const editingShortcut = ref(null)
+const editingCategoryShortcut = ref(null)  // 正在编辑快捷键的类别ID
+
+// 模式切换（默认拖动模式）
+const canvasMode = ref('pan')  // 'annotate' | 'pan'
+const zoomLevel = ref(1)
+const canvasRef = ref(null)
 
 onMounted(async () => {
   await loadData()
@@ -33,6 +39,8 @@ async function loadData() {
     await store.loadCategories(datasetId.value)
     await store.fetchNextImage(datasetId.value)
     await loadProgress()
+    // 加载新图片后重置为拖动模式
+    canvasMode.value = 'pan'
   } catch (error) {
     ElMessage.error('加载数据失败')
   }
@@ -49,29 +57,87 @@ async function loadProgress() {
 
 async function handleSave() {
   try {
-    await store.saveAnnotations(false)
-    ElMessage.success('保存成功')
-    await store.fetchNextImage(datasetId.value)
+    const savedCount = await store.saveAnnotations(false)
+    ElMessage.success(`保存成功 (${savedCount} 个标注)`)
+    // 如果在历史模式，不自动跳转下一张
+    if (!store.isInHistory) {
+      await store.fetchNextImage(datasetId.value)
+      // 进入下一张图片后重置为拖动模式
+      canvasMode.value = 'pan'
+    }
     await loadProgress()
   } catch (error) {
-    ElMessage.error('保存失败')
+    console.error('Save failed:', error)
+    ElMessage.error('保存失败: ' + (error.response?.data?.detail || error.message))
   }
 }
 
 async function handleSkip() {
   try {
     await store.saveAnnotations(true)
-    ElMessage.info('已跳过')
+    ElMessage.info('已标记为未见')
     await store.fetchNextImage(datasetId.value)
     await loadProgress()
+    // 进入下一张图片后重置为拖动模式
+    canvasMode.value = 'pan'
   } catch (error) {
     ElMessage.error('操作失败')
+  }
+}
+
+async function handlePrevious() {
+  try {
+    // 如果已经在历史模式中，先保存当前标注再返回
+    if (store.isInHistory) {
+      const savedCount = await store.saveAnnotations(false)
+      ElMessage.success(`保存成功 (${savedCount} 个标注)`)
+    }
+    await store.goToPreviousImage()
+  } catch (error) {
+    console.error('Save or navigate failed:', error)
+    ElMessage.error('操作失败: ' + (error.response?.data?.detail || error.message))
+  }
+}
+
+async function handleNext() {
+  if (store.isInHistory) {
+    // 在历史模式中，先保存当前标注，再前往下一张
+    try {
+      const savedCount = await store.saveAnnotations(false)
+      ElMessage.success(`保存成功 (${savedCount} 个标注)`)
+      await store.goToNextImage()
+    } catch (error) {
+      console.error('Save or navigate failed:', error)
+      ElMessage.error('操作失败: ' + (error.response?.data?.detail || error.message))
+    }
+  } else {
+    // 正常流程，继续获取新图片
+    await handleSaveAndNext()
+  }
+}
+
+async function handleSaveAndNext() {
+  try {
+    await store.saveAnnotations(false)
+    ElMessage.success('保存成功')
+    store.exitHistoryMode()
+    await store.fetchNextImage(datasetId.value)
+    await loadProgress()
+    // 进入下一张图片后重置为拖动模式
+    canvasMode.value = 'pan'
+  } catch (error) {
+    ElMessage.error('保存失败')
   }
 }
 
 function handleKeydown(e) {
   // 忽略输入框中的按键
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+    return
+  }
+
+  // 正在编辑类别快捷键时，交给对应的处理器
+  if (editingCategoryShortcut.value) {
     return
   }
 
@@ -112,8 +178,22 @@ function handleKeydown(e) {
     return
   }
 
+  // 模式切换快捷键
+  if (key === 'v') {
+    canvasMode.value = 'annotate'
+    return
+  }
+  if (key === 'h') {
+    canvasMode.value = 'pan'
+    return
+  }
+
   // 数字或字母快捷键选择类别
-  store.selectCategoryByKey(key)
+  const selected = store.selectCategoryByKey(key)
+  if (selected) {
+    // 选择类别后切换到标注模式
+    canvasMode.value = 'annotate'
+  }
 }
 
 // 快捷键设置相关
@@ -146,11 +226,72 @@ function resetShortcuts() {
 }
 
 function selectCategory(category) {
+  // 如果正在编辑快捷键，不选择类别
+  if (editingCategoryShortcut.value) return
   store.selectedCategory = category
+  // 选择类别后切换到标注模式
+  canvasMode.value = 'annotate'
+}
+
+function startEditCategoryShortcut(category, e) {
+  e.stopPropagation()
+  editingCategoryShortcut.value = category.id
+}
+
+function handleCategoryShortcutKeydown(category, e) {
+  e.preventDefault()
+  e.stopPropagation()
+
+  if (e.key === 'Escape') {
+    editingCategoryShortcut.value = null
+    return
+  }
+
+  // 只接受单个字符或数字
+  if (e.key.length === 1) {
+    const newKey = e.key.toLowerCase()
+    // 检查是否与其他类别快捷键冲突
+    const conflict = store.categories.find(c =>
+      c.id !== category.id && c.shortcut_key === newKey
+    )
+    if (conflict) {
+      ElMessage.warning(`快捷键 "${newKey}" 已被 "${conflict.name}" 使用`)
+      return
+    }
+
+    // 更新快捷键
+    updateCategoryShortcut(category.id, newKey)
+  }
+}
+
+async function updateCategoryShortcut(categoryId, shortcutKey) {
+  try {
+    await api.put(`/categories/${categoryId}`, { shortcut_key: shortcutKey })
+    // 更新本地数据
+    const cat = store.categories.find(c => c.id === categoryId)
+    if (cat) {
+      cat.shortcut_key = shortcutKey
+    }
+    ElMessage.success('快捷键已更新')
+  } catch (error) {
+    ElMessage.error('更新快捷键失败')
+  }
+  editingCategoryShortcut.value = null
 }
 
 function goBack() {
   router.push('/')
+}
+
+function fitToView() {
+  if (canvasRef.value) {
+    canvasRef.value.fitToContainer()
+    zoomLevel.value = canvasRef.value.scale
+  }
+}
+
+function handleZoomChange(zoom) {
+  zoomLevel.value = zoom
 }
 </script>
 
@@ -190,11 +331,34 @@ function goBack() {
             重做
           </el-button>
         </el-button-group>
+
+        <div class="mode-toolbar">
+          <el-radio-group v-model="canvasMode" size="small">
+            <el-radio-button value="annotate">
+              <span class="mode-btn">✏️ 标注 (V)</span>
+            </el-radio-button>
+            <el-radio-button value="pan">
+              <span class="mode-btn">✋ 拖动 (H)</span>
+            </el-radio-button>
+          </el-radio-group>
+
+          <span class="zoom-info">{{ Math.round(zoomLevel * 100) }}%</span>
+          <el-button size="small" @click="fitToView">适应</el-button>
+        </div>
       </div>
       <div class="right">
+        <el-button-group class="nav-buttons">
+          <el-button @click="handlePrevious" :disabled="!store.canGoPrevious" :icon="'ArrowLeft'">
+            上一张
+          </el-button>
+          <el-button @click="handleNext" :disabled="store.isInHistory && !store.canGoNext" :icon="'ArrowRight'">
+            下一张
+          </el-button>
+        </el-button-group>
+        <span v-if="store.isInHistory" class="history-indicator">浏览历史中</span>
         <el-button @click="showShortcutSettings = true" :icon="'Setting'">快捷键</el-button>
         <el-button @click="showHelp = true" :icon="'QuestionFilled'">帮助</el-button>
-        <el-button @click="handleSkip" type="warning">跳过 ({{ shortcutsStore.getShortcutText('skip') }})</el-button>
+        <el-button @click="handleSkip" type="warning">未见 ({{ shortcutsStore.getShortcutText('skip') }})</el-button>
         <el-button @click="handleSave" type="primary">保存 ({{ shortcutsStore.getShortcutText('save') }})</el-button>
       </div>
     </header>
@@ -214,8 +378,19 @@ function goBack() {
           >
             <span class="color-dot" :style="{ background: category.color }"></span>
             <span class="name">{{ category.name }}</span>
-            <span class="shortcut" v-if="category.shortcut_key">
-              {{ category.shortcut_key }}
+            <span
+              class="shortcut"
+              :class="{ editing: editingCategoryShortcut === category.id }"
+              @click="startEditCategoryShortcut(category, $event)"
+              @keydown="handleCategoryShortcutKeydown(category, $event)"
+              tabindex="0"
+            >
+              <template v-if="editingCategoryShortcut === category.id">
+                ...
+              </template>
+              <template v-else>
+                {{ category.shortcut_key || '+' }}
+              </template>
             </span>
           </div>
         </div>
@@ -256,13 +431,16 @@ function goBack() {
 
         <AnnotationCanvas
           v-else
+          ref="canvasRef"
           :image-id="store.currentImage.id"
           :annotations="store.annotations"
           :categories="store.categories"
           :selected-category="store.selectedCategory"
+          :mode="canvasMode"
           @add="store.addAnnotation"
           @update="store.updateAnnotation"
           @delete="store.removeAnnotation"
+          @zoom-change="handleZoomChange"
         />
       </div>
 
@@ -285,7 +463,7 @@ function goBack() {
               <span class="success">{{ progress.labeled }}</span>
             </div>
             <div class="stat-row">
-              <span>已跳过:</span>
+              <span>未见:</span>
               <span class="warning">{{ progress.skipped }}</span>
             </div>
             <div class="stat-row">
@@ -323,7 +501,7 @@ function goBack() {
           </tr>
           <tr>
             <td><kbd>{{ shortcutsStore.getShortcutText('skip') }}</kbd></td>
-            <td>跳过当前图片（无目标）</td>
+            <td>标记未见（画面中无目标）</td>
           </tr>
           <tr>
             <td><kbd>{{ shortcutsStore.getShortcutText('undo') }}</kbd></td>
@@ -346,8 +524,16 @@ function goBack() {
             <td>平移画布</td>
           </tr>
           <tr>
-            <td><kbd>1-9</kbd> 或 <kbd>自定义键</kbd></td>
-            <td>快速切换类别</td>
+            <td><kbd>V</kbd></td>
+            <td>切换到标注模式</td>
+          </tr>
+          <tr>
+            <td><kbd>H</kbd></td>
+            <td>切换到拖动模式</td>
+          </tr>
+          <tr>
+            <td><kbd>类别快捷键</kbd></td>
+            <td>快速切换类别并进入标注模式</td>
           </tr>
           <tr>
             <td><kbd>{{ shortcutsStore.getShortcutText('help') }}</kbd></td>
@@ -419,6 +605,38 @@ function goBack() {
   gap: 12px;
 }
 
+.mode-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: 16px;
+  padding-left: 16px;
+  border-left: 1px solid #0f3460;
+}
+
+.mode-btn {
+  font-size: 12px;
+}
+
+.zoom-info {
+  color: #a0a0a0;
+  font-size: 12px;
+  min-width: 50px;
+  text-align: center;
+}
+
+.nav-buttons {
+  margin-right: 8px;
+}
+
+.history-indicator {
+  color: #e6a23c;
+  font-size: 12px;
+  padding: 4px 8px;
+  background: rgba(230, 162, 60, 0.2);
+  border-radius: 4px;
+}
+
 .image-info {
   color: #a0a0a0;
   font-size: 14px;
@@ -487,6 +705,25 @@ function goBack() {
   border-radius: 4px;
   font-size: 12px;
   color: #ccc;
+  cursor: pointer;
+  min-width: 20px;
+  text-align: center;
+  transition: all 0.2s;
+}
+
+.category-item .shortcut:hover {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+.category-item .shortcut.editing {
+  background: #e94560;
+  color: white;
+  outline: none;
+}
+
+.category-item .shortcut:focus {
+  outline: 2px solid #e94560;
+  outline-offset: 2px;
 }
 
 .annotations-list {

@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from app.core.config import settings
 from app.routers import auth_router, admin_router, images_router, datasets_router, categories_router
 from app.routers.export import router as export_router
+from app.routers.dataset_configs import router as dataset_configs_router
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -27,6 +28,7 @@ app.include_router(datasets_router)
 app.include_router(categories_router)
 app.include_router(images_router)
 app.include_router(export_router)
+app.include_router(dataset_configs_router)
 
 
 @app.get("/")

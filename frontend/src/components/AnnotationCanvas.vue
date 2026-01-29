@@ -5,10 +5,14 @@ const props = defineProps({
   imageId: Number,
   annotations: Array,
   categories: Array,
-  selectedCategory: Object
+  selectedCategory: Object,
+  mode: {
+    type: String,
+    default: 'annotate'  // 'annotate' | 'pan'
+  }
 })
 
-const emit = defineEmits(['add', 'update', 'delete'])
+const emit = defineEmits(['add', 'update', 'delete', 'zoom-change'])
 
 const canvasRef = ref(null)
 const containerRef = ref(null)
@@ -22,7 +26,8 @@ const offsetY = ref(0)
 
 // 绘制状态
 const isDrawing = ref(false)
-const isDragging = ref(false)
+const isDragging = ref(false)   // 调整边框大小
+const isMoving = ref(false)     // 整体移动框
 const isPanning = ref(false)
 const spacePressed = ref(false)
 
@@ -30,6 +35,9 @@ const startPoint = ref({ x: 0, y: 0 })
 const currentBox = ref(null)
 const selectedAnnotation = ref(null)
 const dragHandle = ref(null)
+
+// 拖动调整时的临时边界框（用于实时预览）
+const dragBox = ref(null)
 
 // 图片URL
 const imageUrl = computed(() => `/api/images/${props.imageId}/file`)
@@ -56,6 +64,17 @@ watch(() => props.imageId, () => {
 watch(() => props.annotations, () => {
   draw()
 }, { deep: true })
+
+// 模式变化时更新光标
+watch(() => props.mode, () => {
+  if (canvasRef.value) {
+    if (props.mode === 'pan') {
+      canvasRef.value.style.cursor = 'grab'
+    } else {
+      canvasRef.value.style.cursor = 'crosshair'
+    }
+  }
+})
 
 function loadImage() {
   if (!props.imageId) return
@@ -118,8 +137,14 @@ function draw() {
   }
 
   // 绘制已有标注
-  props.annotations.forEach(ann => {
-    drawAnnotation(ann, ann.id === selectedAnnotation.value?.id)
+  props.annotations.forEach((ann, index) => {
+    const isSelected = ann.id === selectedAnnotation.value?.id
+    // 如果正在拖动调整或移动这个标注，使用 dragBox 绘制
+    if (isSelected && (isDragging.value || isMoving.value) && dragBox.value) {
+      drawAnnotationWithBox(ann, dragBox.value, index, true)
+    } else {
+      drawAnnotation(ann, index, isSelected)
+    }
   })
 
   // 绘制当前正在绘制的框
@@ -128,7 +153,7 @@ function draw() {
   }
 }
 
-function drawAnnotation(ann, isSelected) {
+function drawAnnotation(ann, index, isSelected) {
   const category = props.categories.find(c => c.id === ann.category_id)
   const color = category?.color || '#FF0000'
 
@@ -144,15 +169,34 @@ function drawAnnotation(ann, isSelected) {
   const box = { x, y, w, h }
   drawBox(box, color, isSelected)
 
-  // 绘制类别标签
+  // 绘制类别标签和编号
   const screenX = x * scale.value + offsetX.value
   const screenY = y * scale.value + offsetY.value
 
+  const labelText = `#${index + 1} ${category?.name || ''}`
   ctx.value.font = '12px Arial'
   ctx.value.fillStyle = color
-  ctx.value.fillRect(screenX, screenY - 18, ctx.value.measureText(category?.name || '').width + 8, 18)
+  ctx.value.fillRect(screenX, screenY - 18, ctx.value.measureText(labelText).width + 8, 18)
   ctx.value.fillStyle = 'white'
-  ctx.value.fillText(category?.name || '', screenX + 4, screenY - 5)
+  ctx.value.fillText(labelText, screenX + 4, screenY - 5)
+}
+
+function drawAnnotationWithBox(ann, box, index, isSelected) {
+  const category = props.categories.find(c => c.id === ann.category_id)
+  const color = category?.color || '#FF0000'
+
+  drawBox(box, color, isSelected)
+
+  // 绘制类别标签和编号
+  const screenX = box.x * scale.value + offsetX.value
+  const screenY = box.y * scale.value + offsetY.value
+
+  const labelText = `#${index + 1} ${category?.name || ''}`
+  ctx.value.font = '12px Arial'
+  ctx.value.fillStyle = color
+  ctx.value.fillRect(screenX, screenY - 18, ctx.value.measureText(labelText).width + 8, 18)
+  ctx.value.fillStyle = 'white'
+  ctx.value.fillText(labelText, screenX + 4, screenY - 5)
 }
 
 function drawBox(box, color, isSelected) {
@@ -200,14 +244,18 @@ function screenToImage(screenX, screenY) {
 }
 
 function handleMouseDown(e) {
+  // 阻止默认行为（Safari 拖动兼容性）
+  e.preventDefault()
+
   const rect = canvasRef.value.getBoundingClientRect()
   const screenX = e.clientX - rect.left
   const screenY = e.clientY - rect.top
 
-  // 空格键按下时进入平移模式
-  if (spacePressed.value) {
+  // 拖动模式或空格键按下时进入平移模式
+  if (props.mode === 'pan' || spacePressed.value) {
     isPanning.value = true
     startPoint.value = { x: e.clientX, y: e.clientY }
+    canvasRef.value.style.cursor = 'grabbing'
     return
   }
 
@@ -218,18 +266,35 @@ function handleMouseDown(e) {
       dragHandle.value = handle
       isDragging.value = true
       startPoint.value = screenToImage(screenX, screenY)
+      // 初始化 dragBox 为当前标注的像素坐标
+      const ann = selectedAnnotation.value
+      const imgW = image.value.width
+      const imgH = image.value.height
+      dragBox.value = {
+        x: (ann.x_center - ann.width / 2) * imgW,
+        y: (ann.y_center - ann.height / 2) * imgH,
+        w: ann.width * imgW,
+        h: ann.height * imgH
+      }
       return
     }
   }
 
-  // 检查是否点击了已有标注
+  // 检查是否点击了已有标注（开始拖动移动）
   const clickedAnn = getAnnotationAt(screenX, screenY)
   if (clickedAnn) {
     selectedAnnotation.value = clickedAnn
-    if (e.detail === 2) {
-      // 双击删除
-      emit('delete', clickedAnn.id)
-      selectedAnnotation.value = null
+    // 开始拖动移动
+    isMoving.value = true
+    startPoint.value = screenToImage(screenX, screenY)
+    // 初始化 dragBox
+    const imgW = image.value.width
+    const imgH = image.value.height
+    dragBox.value = {
+      x: (clickedAnn.x_center - clickedAnn.width / 2) * imgW,
+      y: (clickedAnn.y_center - clickedAnn.height / 2) * imgH,
+      w: clickedAnn.width * imgW,
+      h: clickedAnn.height * imgH
     }
     draw()
     return
@@ -260,9 +325,32 @@ function handleMouseMove(e) {
   }
 
   // 调整大小
-  if (isDragging.value && selectedAnnotation.value && dragHandle.value) {
+  if (isDragging.value && selectedAnnotation.value && dragHandle.value && dragBox.value) {
     const imgPoint = screenToImage(screenX, screenY)
-    updateAnnotationSize(selectedAnnotation.value, dragHandle.value.type, imgPoint)
+    updateDragBox(dragHandle.value.type, imgPoint)
+    draw()
+    return
+  }
+
+  // 整体移动
+  if (isMoving.value && selectedAnnotation.value && dragBox.value) {
+    const imgPoint = screenToImage(screenX, screenY)
+    const dx = imgPoint.x - startPoint.value.x
+    const dy = imgPoint.y - startPoint.value.y
+
+    // 计算原始位置
+    const ann = selectedAnnotation.value
+    const imgW = image.value.width
+    const imgH = image.value.height
+    const origX = (ann.x_center - ann.width / 2) * imgW
+    const origY = (ann.y_center - ann.height / 2) * imgH
+
+    dragBox.value = {
+      x: origX + dx,
+      y: origY + dy,
+      w: dragBox.value.w,
+      h: dragBox.value.h
+    }
     draw()
     return
   }
@@ -285,18 +373,30 @@ function handleMouseUp(e) {
     return
   }
 
-  if (isDragging.value) {
+  if (isDragging.value || isMoving.value) {
+    const wasMoving = isMoving.value
     isDragging.value = false
+    isMoving.value = false
     dragHandle.value = null
     // 保存更新
-    if (selectedAnnotation.value) {
-      emit('update', selectedAnnotation.value.id, {
-        x_center: selectedAnnotation.value.x_center,
-        y_center: selectedAnnotation.value.y_center,
-        width: selectedAnnotation.value.width,
-        height: selectedAnnotation.value.height
-      })
+    if (selectedAnnotation.value && dragBox.value && image.value) {
+      const imgW = image.value.width
+      const imgH = image.value.height
+      const box = dragBox.value
+      const newData = {
+        x_center: (box.x + box.w / 2) / imgW,
+        y_center: (box.y + box.h / 2) / imgH,
+        width: box.w / imgW,
+        height: box.h / imgH
+      }
+      emit('update', selectedAnnotation.value.id, newData)
+      // 更新 selectedAnnotation 的引用，避免下次操作使用旧数据
+      selectedAnnotation.value = {
+        ...selectedAnnotation.value,
+        ...newData
+      }
     }
+    dragBox.value = null
     return
   }
 
@@ -346,6 +446,7 @@ function handleWheel(e) {
   offsetX.value = mouseX - imgPoint.x * newScale
   offsetY.value = mouseY - imgPoint.y * newScale
 
+  emit('zoom-change', scale.value)
   draw()
 }
 
@@ -420,16 +521,13 @@ function getClickedHandle(screenX, screenY) {
   return null
 }
 
-function updateAnnotationSize(ann, handleType, imgPoint) {
-  if (!image.value) return
+function updateDragBox(handleType, imgPoint) {
+  if (!dragBox.value) return
 
-  const imgW = image.value.width
-  const imgH = image.value.height
-
-  let x1 = (ann.x_center - ann.width / 2) * imgW
-  let y1 = (ann.y_center - ann.height / 2) * imgH
-  let x2 = (ann.x_center + ann.width / 2) * imgW
-  let y2 = (ann.y_center + ann.height / 2) * imgH
+  let x1 = dragBox.value.x
+  let y1 = dragBox.value.y
+  let x2 = dragBox.value.x + dragBox.value.w
+  let y2 = dragBox.value.y + dragBox.value.h
 
   switch (handleType) {
     case 'tl': x1 = imgPoint.x; y1 = imgPoint.y; break
@@ -446,13 +544,21 @@ function updateAnnotationSize(ann, handleType, imgPoint) {
   if (x2 - x1 < 10) x2 = x1 + 10
   if (y2 - y1 < 10) y2 = y1 + 10
 
-  ann.x_center = (x1 + x2) / 2 / imgW
-  ann.y_center = (y1 + y2) / 2 / imgH
-  ann.width = (x2 - x1) / imgW
-  ann.height = (y2 - y1) / imgH
+  dragBox.value = {
+    x: x1,
+    y: y1,
+    w: x2 - x1,
+    h: y2 - y1
+  }
 }
 
 function updateCursor(screenX, screenY) {
+  // 拖动模式
+  if (props.mode === 'pan') {
+    canvasRef.value.style.cursor = isPanning.value ? 'grabbing' : 'grab'
+    return
+  }
+
   if (spacePressed.value) {
     canvasRef.value.style.cursor = isPanning.value ? 'grabbing' : 'grab'
     return
@@ -469,6 +575,12 @@ function updateCursor(screenX, screenY) {
   const ann = getAnnotationAt(screenX, screenY)
   canvasRef.value.style.cursor = ann ? 'move' : 'crosshair'
 }
+
+// 暴露方法供外部调用
+defineExpose({
+  fitToContainer,
+  scale
+})
 </script>
 
 <template>

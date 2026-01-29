@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../../utils/api'
 import { useUserStore } from '../../stores/user'
+import DatasetConfigDialog from '../../components/DatasetConfigDialog.vue'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -24,6 +25,8 @@ const form = ref({
 
 // 批量导入相关
 const batchImportVisible = ref(false)
+const configDialogVisible = ref(false)
+const selectedDataset = ref(null)
 const batchImportForm = ref({
   root_path: ''
 })
@@ -123,6 +126,11 @@ async function handleDelete(dataset) {
 
 function goToCategories(datasetId) {
   router.push(`/admin/categories/${datasetId}`)
+}
+
+function showConfigDialog(dataset) {
+  selectedDataset.value = dataset
+  configDialogVisible.value = true
 }
 
 function showBatchImportDialog() {
@@ -255,9 +263,10 @@ function closeBatchImportDialog() {
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="280" fixed="right">
+      <el-table-column label="操作" width="340" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="goToCategories(row.id)">类别</el-button>
+          <el-button size="small" @click="showConfigDialog(row)">配置</el-button>
           <el-button size="small" type="primary" @click="handleScan(row)">扫描</el-button>
           <el-button size="small" @click="showEditDialog(row)">编辑</el-button>
           <el-button size="small" type="danger" @click="handleDelete(row)">删除</el-button>
@@ -352,6 +361,14 @@ function closeBatchImportDialog() {
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 数据集配置对话框 -->
+    <DatasetConfigDialog
+      v-model="configDialogVisible"
+      :dataset-id="selectedDataset?.id"
+      :dataset-name="selectedDataset?.name"
+      @saved="loadDatasets"
+    />
   </div>
 </template>
 
