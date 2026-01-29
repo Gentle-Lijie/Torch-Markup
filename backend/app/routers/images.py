@@ -123,7 +123,7 @@ async def get_next_images_batch(
         pending_images = []
         if remaining > 0:
             cursor.execute(
-                "SELECT * FROM images WHERE dataset_id = %s AND status = 'pending' LIMIT %s",
+                "SELECT * FROM images WHERE dataset_id = %s AND status = 'pending' ORDER BY RAND() LIMIT %s",
                 (dataset_id, remaining)
             )
             pending_images = cursor.fetchall()
