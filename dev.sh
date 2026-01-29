@@ -20,6 +20,15 @@ echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}    Torch-Markup 开发环境${NC}"
 echo -e "${BLUE}========================================${NC}"
 
+# Git 同步
+git_pull() {
+    echo -e "\n${YELLOW}[0/4] 同步代码...${NC}"
+    cd "$ROOT_DIR"
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        git pull --rebase 2>/dev/null && echo -e "${GREEN}✓ 代码已同步${NC}" || echo -e "${YELLOW}⚠ Git 同步跳过（可能有本地修改）${NC}"
+    fi
+}
+
 # 生成新的 SECRET_KEY
 generate_secret_key() {
     if command -v openssl &> /dev/null; then
@@ -238,6 +247,7 @@ main() {
     case "${1:-}" in
         ""|fg|foreground)
             # 默认或 fg：前台运行
+            git_pull
             check_python
             check_node
             check_npm
@@ -249,6 +259,7 @@ main() {
             ;;
         start|bg|background)
             # start/bg：后台运行
+            git_pull
             check_python
             check_node
             check_npm
@@ -265,6 +276,7 @@ main() {
         restart)
             stop_services
             sleep 2
+            git_pull
             check_python
             check_node
             check_npm
