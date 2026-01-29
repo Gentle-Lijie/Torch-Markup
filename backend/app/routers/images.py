@@ -303,11 +303,27 @@ async def save_annotations(
                 annotation_count += 1
 
         # 更新图片状态
-        new_status = 'skipped' if data.skip else 'labeled'
-        cursor.execute(
-            "UPDATE images SET status = %s, labeled_by = %s, labeled_at = NOW() WHERE id = %s",
-            (new_status, current_user['id'], image_id)
-        )
+        # skip=true -> skipped
+        # skip=false 且有标注 -> labeled
+        # skip=false 且无标注 -> pending (不更新状态)
+        if data.skip:
+            new_status = 'skipped'
+        elif annotation_count > 0:
+            new_status = 'labeled'
+        else:
+            new_status = 'pending'
+
+        if new_status != 'pending':
+            cursor.execute(
+                "UPDATE images SET status = %s, labeled_by = %s, labeled_at = NOW() WHERE id = %s",
+                (new_status, current_user['id'], image_id)
+            )
+        else:
+            # 无标注时释放图片分配，让其他人可以处理
+            cursor.execute(
+                "UPDATE images SET status = 'pending', assigned_to = NULL, assigned_at = NULL WHERE id = %s",
+                (image_id,)
+            )
 
         # 更新数据集统计
         cursor.execute(
@@ -320,24 +336,25 @@ async def save_annotations(
             (labeled, image['dataset_id'])
         )
 
-        # 更新工作量统计
-        today = date.today()
-        cursor.execute(
-            "SELECT id FROM work_statistics WHERE user_id = %s AND dataset_id = %s AND date = %s",
-            (current_user['id'], image['dataset_id'], today)
-        )
-        stats = cursor.fetchone()
+        # 更新工作量统计（只有 labeled 或 skipped 才计入）
+        if new_status != 'pending':
+            today = date.today()
+            cursor.execute(
+                "SELECT id FROM work_statistics WHERE user_id = %s AND dataset_id = %s AND date = %s",
+                (current_user['id'], image['dataset_id'], today)
+            )
+            stats = cursor.fetchone()
 
-        if stats:
-            cursor.execute(
-                "UPDATE work_statistics SET images_labeled = images_labeled + 1, annotations_created = annotations_created + %s WHERE id = %s",
-                (annotation_count, stats['id'])
-            )
-        else:
-            cursor.execute(
-                "INSERT INTO work_statistics (user_id, dataset_id, date, images_labeled, annotations_created) VALUES (%s, %s, %s, %s, %s)",
-                (current_user['id'], image['dataset_id'], today, 1, annotation_count)
-            )
+            if stats:
+                cursor.execute(
+                    "UPDATE work_statistics SET images_labeled = images_labeled + 1, annotations_created = annotations_created + %s WHERE id = %s",
+                    (annotation_count, stats['id'])
+                )
+            else:
+                cursor.execute(
+                    "INSERT INTO work_statistics (user_id, dataset_id, date, images_labeled, annotations_created) VALUES (%s, %s, %s, %s, %s)",
+                    (current_user['id'], image['dataset_id'], today, 1, annotation_count)
+                )
 
     return {"message": "保存成功", "status": new_status}
 

@@ -342,7 +342,7 @@ function handleZoomChange(zoom) {
             上一张
           </el-button>
           <el-button @click="handleNext" :disabled="store.isInHistory && !store.canGoNext" :icon="'ArrowRight'">
-            {{ store.isInHistory ? '下一张' : '继续' }}
+            下一张
           </el-button>
         </el-button-group>
         <span v-if="store.isInHistory" class="history-indicator">浏览历史中</span>
