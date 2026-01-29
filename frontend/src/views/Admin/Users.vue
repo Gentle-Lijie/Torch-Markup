@@ -7,8 +7,15 @@ import api from '../../utils/api'
 const users = ref([])
 const loading = ref(true)
 const resetDialogVisible = ref(false)
+const createDialogVisible = ref(false)
 const selectedUser = ref(null)
 const newPassword = ref('')
+const newUser = ref({
+  username: '',
+  password: '',
+  email: '',
+  is_admin: false
+})
 
 onMounted(() => {
   loadUsers()
@@ -111,12 +118,43 @@ function handleCommand(command, user) {
     handleDeleteUser(user)
   }
 }
+
+function showCreateDialog() {
+  newUser.value = {
+    username: '',
+    password: '',
+    email: '',
+    is_admin: false
+  }
+  createDialogVisible.value = true
+}
+
+async function handleCreateUser() {
+  if (!newUser.value.username) {
+    ElMessage.warning('请输入用户名')
+    return
+  }
+  if (!newUser.value.password || newUser.value.password.length < 6) {
+    ElMessage.warning('密码长度不能少于6位')
+    return
+  }
+
+  try {
+    await api.post('/admin/users', newUser.value)
+    ElMessage.success('用户创建成功')
+    createDialogVisible.value = false
+    loadUsers()
+  } catch (error) {
+    // 错误已在拦截器中处理
+  }
+}
 </script>
 
 <template>
   <div class="users-page">
     <div class="page-header">
       <h2>用户管理</h2>
+      <el-button type="primary" @click="showCreateDialog">添加用户</el-button>
     </div>
 
     <el-table :data="users" v-loading="loading" stripe style="width: 100%">
@@ -178,6 +216,34 @@ function handleCommand(command, user) {
       </el-table-column>
     </el-table>
 
+    <!-- 添加用户对话框 -->
+    <el-dialog v-model="createDialogVisible" title="添加用户" width="450px">
+      <el-form :model="newUser" label-width="80px">
+        <el-form-item label="用户名" required>
+          <el-input v-model="newUser.username" placeholder="请输入用户名" />
+        </el-form-item>
+        <el-form-item label="密码" required>
+          <el-input
+            v-model="newUser.password"
+            type="password"
+            placeholder="请输入密码（至少6位）"
+            show-password
+          />
+        </el-form-item>
+        <el-form-item label="邮箱">
+          <el-input v-model="newUser.email" placeholder="留空则自动生成" />
+          <div class="form-tip">留空将自动生成为：用户名@torch-markup.local</div>
+        </el-form-item>
+        <el-form-item label="管理员">
+          <el-switch v-model="newUser.is_admin" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="createDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleCreateUser">创建</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 重置密码对话框 -->
     <el-dialog v-model="resetDialogVisible" title="重置密码" width="400px">
       <el-form>
@@ -223,5 +289,11 @@ function handleCommand(command, user) {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+.form-tip {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 4px;
 }
 </style>

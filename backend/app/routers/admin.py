@@ -19,6 +19,13 @@ class UserListResponse(BaseModel):
     images_labeled: int = 0
 
 
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    email: Optional[str] = None
+    is_admin: bool = False
+
+
 class UserUpdate(BaseModel):
     is_active: Optional[bool] = None
     is_admin: Optional[bool] = None
@@ -26,6 +33,44 @@ class UserUpdate(BaseModel):
 
 class PasswordReset(BaseModel):
     new_password: str
+
+
+@router.post("/users", response_model=UserListResponse)
+async def create_user(
+    user_data: UserCreate,
+    conn = Depends(get_db_dependency),
+    current_admin = Depends(get_current_admin)
+):
+    """创建用户"""
+    with conn.cursor() as cursor:
+        # 检查用户名是否已存在
+        cursor.execute("SELECT id FROM users WHERE username = %s", (user_data.username,))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="用户名已存在")
+
+        # 如果邮箱为空，自动生成
+        email = user_data.email if user_data.email else f"{user_data.username}@torch-markup.local"
+
+        # 检查邮箱是否已存在
+        cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="邮箱已被使用")
+
+        # 创建用户
+        hashed_password = get_password_hash(user_data.password)
+        cursor.execute(
+            "INSERT INTO users (username, email, hashed_password, is_admin, is_active) VALUES (%s, %s, %s, %s, %s)",
+            (user_data.username, email, hashed_password, user_data.is_admin, True)
+        )
+        user_id = cursor.lastrowid
+
+        cursor.execute(
+            "SELECT id, username, email, is_admin, is_active, created_at, 0 as images_labeled FROM users WHERE id = %s",
+            (user_id,)
+        )
+        user = cursor.fetchone()
+
+    return user
 
 
 @router.get("/users", response_model=List[UserListResponse])
